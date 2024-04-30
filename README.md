@@ -5,7 +5,7 @@
 First, you can install the entire codebase from this google drive link containing embeddings and the pretrained model. 
 If you install from the gdrive you can skip installing GloVe embeddings, and go straight to testing the trained model. 
 https://drive.google.com/file/d/1NWwM06eLVWsf7XZYFcXuBmXBSEFM5V3q/view?usp=sharing
-
+```
 Create an Anaconda environment named 'memsum' and activate it:
 ```
 conda create -n memsum python=3.7
