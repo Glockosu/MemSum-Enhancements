@@ -1,3 +1,6 @@
+# Authors: Alex Johannesson and Saumya Shukla
+# Description: This script performs document summarization using different models and measures their performance with ROUGE scores. It supports command-line arguments for flexible execution configurations.
+
 from datautils import *
 from model import *
 from utils import *
@@ -15,30 +18,66 @@ import copy
 
 import argparse
 
-def update_moving_average( m_ema, m, decay ):
+def update_moving_average(m_ema, m, decay):
+    """
+    Updates the moving average of model parameters for use in techniques like SWA (Stochastic Weight Averaging).
+    
+    Args:
+        m_ema (torch.nn.Module): The model whose parameters are the exponential moving averages.
+        m (torch.nn.Module): The model from which parameters are used to update m_ema.
+        decay (float): The decay rate used to balance between the previous averages and the new parameters.
+    
+    This function directly modifies m_ema by blending its parameters with those from m, according to the decay rate.
+    """
+    # Ensure no gradient calculations are done to speed up computations and save memory
     with torch.no_grad():
-        param_dict_m_ema =  m_ema.module.parameters()  if isinstance(  m_ema, nn.DataParallel ) else m_ema.parameters() 
-        param_dict_m =  m.module.parameters()  if isinstance( m , nn.DataParallel ) else  m.parameters() 
-        for param_m_ema, param_m in zip( param_dict_m_ema, param_dict_m ):
-            param_m_ema.copy_( decay * param_m_ema + (1-decay) *  param_m )
+        # Handle cases where models could be wrapped in nn.DataParallel
+        param_dict_m_ema = m_ema.module.parameters() if isinstance(m_ema, nn.DataParallel) else m_ema.parameters()
+        param_dict_m = m.module.parameters() if isinstance(m, nn.DataParallel) else m.parameters()
+        
+        # Update each parameter in m_ema by the moving average formula
+        for param_m_ema, param_m in zip(param_dict_m_ema, param_dict_m):
+            param_m_ema.copy_(decay * param_m_ema + (1 - decay) * param_m)
 
-def LOG( info, end="\n" ):
+def LOG(info, end="\n"):
+    """
+    Logs the given information to a file specified by the global variable 'log_out_file'.
+    
+    Args:
+        info (str): The information to log.
+        end (str): The end character to use after the log message, default is newline.
+    
+    This function is a utility for logging runtime information or errors.
+    """
     global log_out_file
-    with open( log_out_file, "a" ) as f:
-        f.write( info + end )
+    with open(log_out_file, "a") as f:
+        f.write(info + end)
 
-def load_corpus( fname, is_training  ):
+def load_corpus(fname, is_training):
+    """
+    Loads a corpus from a file, filtering out entries based on certain conditions.
+    
+    Args:
+        fname (str): File name of the corpus to load.
+        is_training (bool): Flag indicating if the loading is for training purposes.
+    
+    Returns:
+        list: A list of data entries that meet the required conditions.
+    
+    This function reads a JSONL file (JSON lines) where each line is a JSON entry representing training or validation data.
+    It filters out entries where the 'text' or 'summary' fields are empty. For training data, it further checks if 'indices' or 'score' are empty.
+    """
     corpus = []
-    with open( fname, "r" ) as f:
+    with open(fname, "r") as f:
         for line in tqdm(f):
             data = json.loads(line)
             if len(data["text"]) == 0 or len(data["summary"]) == 0:
-                continue
+                continue  # Skip entries with empty text or summary
             if is_training:
-                if len( data["indices"] ) == 0 or len( data["score"] ) == 0:
+                # For training, also check if 'indices' or 'score' are empty
+                if len(data["indices"]) == 0 or len(data["score"]) == 0:
                     continue
-
-            corpus.append( data )
+            corpus.append(data)
     return corpus
 
 # parser = argparse.ArgumentParser()
@@ -214,93 +253,135 @@ rouge_cal = rouge_scorer.RougeScorer(['rouge1','rouge2', 'rougeLsum'], use_stemm
 
 
 def train_iteration(batch):
+    """
+    Performs a single training iteration over a given batch, handling the training process for extractive summarization.
+
+    Args:
+        batch (tuple): Contains all input and target data needed for the training step:
+                       - seqs: Tensor representing tokenized sentences.
+                       - doc_mask: Mask for documents to indicate padded areas.
+                       - selected_y_label: Labels for training.
+                       - selected_score: Scores related to the quality of the summaries.
+                       - summary_seq: Sequence of summaries.
+                       - valid_sen_idxs: Indices of valid sentences.
+
+    Returns:
+        float: The loss value computed for this training iteration.
+
+    This function processes the batch data, performs forward propagation through the model,
+    calculates the loss, and performs a backward pass to update model weights.
+    """
+    # Unpack the batch data
     seqs, doc_mask, selected_y_label, selected_score, summary_seq, valid_sen_idxs = batch
+
+    # Move data to the current device (e.g., GPU)
     seqs = seqs.to(device)
     doc_mask = doc_mask.to(device)
     selected_y_label = selected_y_label.to(device)
     selected_score = selected_score.to(device)
     
+    # Process valid sentence indices for use in training
     valid_sen_idxs_np = valid_sen_idxs.detach().cpu().numpy()
-    valid_sen_idxs = -1*np.ones_like( valid_sen_idxs_np )
-    valid_sen_idxs_np[ valid_sen_idxs_np>=doc_mask.size(1) ] = -1
-    for doc_i in range( valid_sen_idxs_np.shape[0] ):
-        valid_idxs = valid_sen_idxs_np[doc_i][ valid_sen_idxs_np[doc_i] != -1]
+    valid_sen_idxs = -1 * np.ones_like(valid_sen_idxs_np)
+    valid_sen_idxs_np[valid_sen_idxs_np >= doc_mask.size(1)] = -1
+    for doc_i in range(valid_sen_idxs_np.shape[0]):
+        valid_idxs = valid_sen_idxs_np[doc_i][valid_sen_idxs_np[doc_i] != -1]
         valid_sen_idxs[doc_i, : len(valid_idxs)] = valid_idxs
     valid_sen_idxs = torch.from_numpy(valid_sen_idxs).to(device)
     
-    num_documents = seqs.size(0)
-    num_sentences = seqs.size(1)
+    # Embedding and context encoding steps
+    local_sen_embed = local_sentence_encoder(seqs.view(-1, seqs.size(2)), dropout_rate)
+    local_sen_embed = local_sen_embed.view(-1, num_sentences, local_sen_embed.size(1))
+    global_context_embed = global_context_encoder(local_sen_embed, doc_mask, dropout_rate)
     
-    local_sen_embed = local_sentence_encoder( seqs.view(-1, seqs.size(2) ) , dropout_rate )
-    local_sen_embed = local_sen_embed.view( -1, num_sentences, local_sen_embed.size(1) )
-    global_context_embed = global_context_encoder( local_sen_embed, doc_mask , dropout_rate )
-    
+    # Initialize masks for remaining and extracted sentences
     doc_mask_np = doc_mask.detach().cpu().numpy()
-    remaining_mask_np = np.ones_like( doc_mask_np ).astype( np.bool ) | doc_mask_np
-    extraction_mask_np = np.zeros_like( doc_mask_np ).astype( np.bool ) | doc_mask_np
+    remaining_mask_np = np.ones_like(doc_mask_np).astype(np.bool) | doc_mask_np
+    extraction_mask_np = np.zeros_like(doc_mask_np).astype(np.bool) | doc_mask_np
     
+    # Lists to collect probabilities and decision flags for steps
     log_action_prob_list = []
     log_stop_prob_list = []
-    
     done_list = []
     extraction_context_embed = None
     
+    # Iterate through the steps of extraction
     for step in range(valid_sen_idxs.shape[1]):
-        remaining_mask = torch.from_numpy( remaining_mask_np ).to(device)
-        extraction_mask = torch.from_numpy( extraction_mask_np ).to(device)
+        remaining_mask = torch.from_numpy(remaining_mask_np).to(device)
+        extraction_mask = torch.from_numpy(extraction_mask_np).to(device)
         if step > 0:
-            extraction_context_embed = extraction_context_decoder( local_sen_embed, remaining_mask, extraction_mask, dropout_rate )
-        p, p_stop, baseline = extractor( local_sen_embed, global_context_embed, extraction_context_embed , extraction_mask , dropout_rate )
+            extraction_context_embed = extraction_context_decoder(local_sen_embed, remaining_mask, extraction_mask, dropout_rate)
         
+        p, p_stop, baseline = extractor(local_sen_embed, global_context_embed, extraction_context_embed, extraction_mask, dropout_rate)
+        
+        # Process stopping probabilities
         p_stop = p_stop.unsqueeze(1)
-        m_stop = Categorical( torch.cat( [ 1-p_stop, p_stop  ], dim =1 ) )
+        m_stop = Categorical(torch.cat([1 - p_stop, p_stop], dim=1))
         
+        # Handle sentence indices and completion flags
         sen_indices = valid_sen_idxs[:, step]
         done = sen_indices == -1
         if len(done_list) > 0:
             done = torch.logical_or(done_list[-1], done)
-            just_stop = torch.logical_and( ~done_list[-1], done )
+            just_stop = torch.logical_and(~done_list[-1], done)
         else:
             just_stop = done
         
-        if torch.all( done ) and not torch.any(just_stop):
+        if torch.all(done) and not torch.any(just_stop):
             break
-            
-        p = p.masked_fill( extraction_mask, 1e-12 )  
-        normalized_p = p / p.sum(dim=1, keepdims = True)
-        ## Here the sen_indices is actually pre-sampled action
-        normalized_p = normalized_p[ np.arange( num_documents ), sen_indices ]
-        log_action_prob = normalized_p.masked_fill( done, 1.0 ).log()
         
-        log_stop_prob = m_stop.log_prob( done.to(torch.long)  )
-        log_stop_prob = log_stop_prob.masked_fill( torch.logical_xor( done, just_stop ), 0.0 )
+        # Calculate and log probabilities
+        p = p.masked_fill(extraction_mask, 1e-12)
+        normalized_p = p / p.sum(dim=1, keepdims=True)
+        normalized_p = normalized_p[np.arange(num_documents), sen_indices]
+        log_action_prob = normalized_p.masked_fill(done, 1.0).log()
         
-        log_action_prob_list.append( log_action_prob.unsqueeze(1) )
-        log_stop_prob_list.append( log_stop_prob.unsqueeze(1) )
+        log_stop_prob = m_stop.log_prob(done.to(torch.long))
+        log_stop_prob = log_stop_prob.masked_fill(torch.logical_xor(done, just_stop), 0.0)
+        
+        log_action_prob_list.append(log_action_prob.unsqueeze(1))
+        log_stop_prob_list.append(log_stop_prob.unsqueeze(1))
         done_list.append(done)
         
-        for doc_i in range( num_documents ):
-            sen_i = sen_indices[ doc_i ].item()
+        # Update masks based on actions taken
+        for doc_i in range(num_documents):
+            sen_i = sen_indices[doc_i].item()
             if sen_i != -1:
-                remaining_mask_np[doc_i,sen_i] = False
-                extraction_mask_np[doc_i,sen_i] = True
+                remaining_mask_np[doc_i, sen_i] = False
+                extraction_mask_np[doc_i, sen_i] = True
     
-        
-    log_action_prob_list = torch.cat( log_action_prob_list, dim = 1 )
-    log_stop_prob_list = torch.cat( log_stop_prob_list, dim = 1 )
+    # Combine logged probabilities and calculate the loss
+    log_action_prob_list = torch.cat(log_action_prob_list, dim=1)
+    log_stop_prob_list = torch.cat(log_stop_prob_list, dim=1)
     log_prob_list = log_action_prob_list + log_stop_prob_list
-    log_prob_list = log_prob_list.sum(dim=1)  / ( (log_prob_list != 0).to(torch.float32).sum(dim=1) )  
+    log_prob_list = log_prob_list.sum(dim=1) / ((log_prob_list != 0).to(torch.float32).sum(dim=1))
     
     loss = (-log_prob_list * selected_score).mean()
     
+    # Perform backpropagation
     optimizer.zero_grad()
-    loss.backward()    
+    loss.backward()
     optimizer.step()
 
     return loss.item()
 
 
 def validation_iteration(batch):
+    """
+    Processes a single validation batch to evaluate the performance of the summarization model using the exponential moving average (EMA) parameters.
+    
+    Args:
+        batch (tuple): Contains the input data needed for the validation:
+                       - seqs: The sequences of tokens representing the documents.
+                       - doc_mask: The mask indicating valid token positions within the documents.
+                       - summary_seq: The sequences representing the summaries.
+    
+    Returns:
+        list: A list of tuples containing ROUGE scores for each document in the batch.
+
+    This function computes the summarization based on the model's ability to predict the importance of sentences and measures the quality using ROUGE metrics.
+    """
+    # Move data to the computation device
     seqs, doc_mask, summary_seq = batch
     seqs = seqs.to(device)
     doc_mask = doc_mask.to(device)
@@ -321,6 +402,7 @@ def validation_iteration(batch):
     done_list = []
     extraction_context_embed = None
     
+    # Iterate through the steps of extraction, simulating the extraction process
     for step in range(max_extracted_sentences_per_document):
         remaining_mask = torch.from_numpy( remaining_mask_np ).to(device)
         extraction_mask = torch.from_numpy( extraction_mask_np ).to(device)
@@ -342,12 +424,14 @@ def validation_iteration(batch):
         sen_indices = torch.argmax(normalized_p, dim =1)
         done_list.append(done)
         
+         # Update masks based on selected sentences
         for doc_i in range( num_documents ):
             if not done[doc_i]:
                 sen_i = sen_indices[ doc_i ].item()
                 remaining_mask_np[doc_i,sen_i] = False
                 extraction_mask_np[doc_i,sen_i] = True
-                
+
+    # Calculate ROUGE scores for each document based on extracted summaries       
     scores = []
     for doc_i in range(seqs.shape[0]):
         ref = "\n".join( [ vocab.seq2sent( seq ) for seq in summary_seq[doc_i] ]  ).strip()
@@ -414,5 +498,4 @@ for epoch in range( current_epoch, num_of_epochs ):
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict()
                 } , model_folder+"/model_batch_%d.pt"%(current_batch), max_to_keep = 100 )
-
 

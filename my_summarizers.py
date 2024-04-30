@@ -1,3 +1,17 @@
+# Authors: Alex Johannesson and Saumya Shukla
+# Description: This script sets up the environment for three variants of the MemSum summarization models:
+#              MemSum_Final, MemSum_wo_history, and MemSum_with_stop_sentence. It imports necessary
+#              model components and data utilities from different modules within the project.
+
+import torch
+import torch.nn.functional as F
+from torch.distributions import Categorical
+import numpy as np
+import pickle
+from tqdm import tqdm
+import json
+
+# Importing components for the MemSum_Final model variant
 from src.MemSum_Final.model import LocalSentenceEncoder as LocalSentenceEncoder_MemSum_Final
 from src.MemSum_Final.model import GlobalContextEncoder as GlobalContextEncoder_MemSum_Final
 from src.MemSum_Final.model import ExtractionContextDecoder as ExtractionContextDecoder_MemSum_Final
@@ -5,6 +19,7 @@ from src.MemSum_Final.model import Extractor as Extractor_MemSum_Final
 from src.MemSum_Final.datautils import Vocab as Vocab_MemSum_Final
 from src.MemSum_Final.datautils import SentenceTokenizer as SentenceTokenizer_MemSum_Final
 
+# Importing components for the MemSum_wo_history model variant
 from src.MemSum_wo_history.model import LocalSentenceEncoder as LocalSentenceEncoder_MemSum_wo_history
 from src.MemSum_wo_history.model import GlobalContextEncoder as GlobalContextEncoder_MemSum_wo_history
 from src.MemSum_wo_history.model import ExtractionContextDecoder as ExtractionContextDecoder_MemSum_wo_history
@@ -12,8 +27,7 @@ from src.MemSum_wo_history.model import Extractor as Extractor_MemSum_wo_history
 from src.MemSum_wo_history.datautils import Vocab as Vocab_MemSum_wo_history
 from src.MemSum_wo_history.datautils import SentenceTokenizer as SentenceTokenizer_MemSum_wo_history
 
-
-
+# Importing components for the MemSum_with_stop_sentence model variant
 from src.MemSum_with_stop_sentence.model import LocalSentenceEncoder as LocalSentenceEncoder_MemSum_with_stop_sentence
 from src.MemSum_with_stop_sentence.model import GlobalContextEncoder as GlobalContextEncoder_MemSum_with_stop_sentence
 from src.MemSum_with_stop_sentence.model import ExtractionContextDecoder as ExtractionContextDecoder_MemSum_with_stop_sentence
@@ -22,21 +36,23 @@ from src.MemSum_with_stop_sentence.datautils import Vocab as Vocab_MemSum_with_s
 from src.MemSum_with_stop_sentence.datautils import SentenceTokenizer as SentenceTokenizer_MemSum_with_stop_sentence
 
 
-
-import torch.nn.functional as F
-from torch.distributions import Categorical
-
-import pickle
-import torch
-import numpy as np
-
-from tqdm import tqdm
-import json
-
-
-
 class ExtractiveSummarizer_MemSum_Final:
     def __init__( self, model_path, vocabulary_path, gpu = None , embed_dim=200, num_heads=8, hidden_dim = 1024, N_enc_l = 2 , N_enc_g = 2, N_dec = 3,  max_seq_len =500, max_doc_len = 100  ):
+        """
+        Initializes the extractive summarizer with specified model components and parameters.
+        Args:
+            model_path (str): Path to the pre-trained model checkpoint.
+            vocabulary_path (str): Path to the vocabulary file.
+            gpu (int, optional): GPU device index if CUDA is available.
+            embed_dim (int): Embedding dimension size.
+            num_heads (int): Number of attention heads.
+            hidden_dim (int): Dimension of the hidden layer.
+            N_enc_l (int): Number of layers in the local sentence encoder.
+            N_enc_g (int): Number of layers in the global context encoder.
+            N_dec (int): Number of layers in the extraction context decoder.
+            max_seq_len (int): Maximum length of sentences.
+            max_doc_len (int): Maximum number of sentences in a document.
+        """
         with open( vocabulary_path , "rb" ) as f:
             words = pickle.load(f)
         self.vocab = Vocab_MemSum_Final( words )
@@ -62,16 +78,32 @@ class ExtractiveSummarizer_MemSum_Final:
         self.max_doc_len = max_doc_len
     
     def get_ngram(self,  w_list, n = 4 ):
+        """
+        Generates a set of n-grams from a list of words.
+        Args:
+            w_list (list of str): The list of words from which to generate n-grams.
+            n (int, optional): The number of words in each n-gram; defaults to 4.
+        Returns:
+            set: A set containing the n-grams as strings, where each n-gram is represented by words joined with underscores.
+        """
         ngram_set = set()
         for pos in range(len(w_list) - n + 1 ):
             ngram_set.add( "_".join( w_list[ pos:pos+n] )  )
         return ngram_set
 
     def extract( self, document_batch, p_stop_thres = 0.7, ngram_blocking = False, ngram = 3, return_sentence_position = False, return_sentence_score_history = False, max_extracted_sentences_per_document = 4 ):
-        """document_batch is a batch of documents:
-        [  [ sen1, sen2, ... , senL1 ], 
-           [ sen1, sen2, ... , senL2], ...
-         ]
+        """
+        Extracts sentences from a batch of documents using the trained model components.
+        Args:
+            document_batch (list of list of str): A batch of documents, each document is a list of sentences.
+            p_stop_thres (float, optional): Threshold for stopping probability to decide when to stop extraction; defaults to 0.7.
+            ngram_blocking (bool, optional): Enables n-gram blocking to prevent redundancy; defaults to False.
+            ngram (int, optional): The size of n-grams for blocking; defaults to 3.
+            return_sentence_position (bool, optional): If True, returns the positions of extracted sentences; defaults to False.
+            return_sentence_score_history (bool, optional): If True, returns the history of sentence scores; defaults to False.
+            max_extracted_sentences_per_document (int, optional): Maximum number of sentences to extract per document; defaults to 4.
+        Returns:
+            list or tuple: Depending on the flags, returns extracted sentences and optionally their positions and score histories.
         """
         ## tokenization:
         document_length_list = []
@@ -210,10 +242,20 @@ class ExtractiveSummarizer_MemSum_Final:
 
 
     def analyze( self, document_batch, extraction_history , p_stop_thres = 0.7, ngram_blocking = False, ngram = 3, return_sentence_position = False, return_sentence_score_history = False ):
-        """document_batch is a batch of documents:
-        [  [ sen1, sen2, ... , senL1 ], 
-           [ sen1, sen2, ... , senL2], ...
-         ]
+        """
+        Analyzes given documents based on a predefined extraction history, which can help in understanding model decisions or adjustments.
+        
+        Args:
+            document_batch (list of list of str): Batch of documents, where each document is a list of sentences.
+            extraction_history (list of int): History of indices indicating which sentences were extracted in previous runs.
+            p_stop_thres (float, optional): Probability threshold for deciding to stop extraction. Default is 0.7.
+            ngram_blocking (bool, optional): Whether to apply n-gram blocking to avoid redundancy. Default is False.
+            ngram (int, optional): The size of the n-grams used for blocking. Default is 3.
+            return_sentence_position (bool, optional): If True, returns the positions of sentences that were extracted.
+            return_sentence_score_history (bool, optional): If True, returns the history of sentence scores during extraction.
+
+        Returns:
+            list or tuple: Depending on the flags, this can return just the extracted sentences, their positions, and the score history.
         """
         ## tokenization:
         document_length_list = []
@@ -334,6 +376,21 @@ class ExtractiveSummarizer_MemSum_Final:
 
 class ExtractiveSummarizer_MemSum_wo_history:
     def __init__( self, model_path, vocabulary_path, gpu = None , embed_dim=200, num_heads=8, hidden_dim = 1024, N_enc_l = 2, N_enc_g = 2, N_dec = 3, max_seq_len =500, max_doc_len = 100  ):
+        """
+        Initializes the extractive summarizer with specified model components and parameters.
+        Args:
+            model_path (str): Path to the pre-trained model checkpoint.
+            vocabulary_path (str): Path to the vocabulary file.
+            gpu (int, optional): GPU device index if CUDA is available.
+            embed_dim (int): Embedding dimension size.
+            num_heads (int): Number of attention heads.
+            hidden_dim (int): Dimension of the hidden layer.
+            N_enc_l (int): Number of layers in the local sentence encoder.
+            N_enc_g (int): Number of layers in the global context encoder.
+            N_dec (int): Number of layers in the extraction context decoder.
+            max_seq_len (int): Maximum length of sentences.
+            max_doc_len (int): Maximum number of sentences in a document.
+        """
         with open( vocabulary_path , "rb" ) as f:
             words = pickle.load(f)
         self.vocab = Vocab_MemSum_wo_history( words )
@@ -360,6 +417,14 @@ class ExtractiveSummarizer_MemSum_wo_history:
 
 
     def get_ngram(self,  w_list, n = 4 ):
+        """
+        Generates a set of n-grams from a list of words.
+        Args:
+            w_list (list of str): The list of words from which to generate n-grams.
+            n (int, optional): The number of words in each n-gram; defaults to 4.
+        Returns:
+            set: A set containing the n-grams as strings, where each n-gram is represented by words joined with underscores.
+        """
         ngram_set = set()
         for pos in range(len(w_list) - n + 1 ):
             ngram_set.add( "_".join( w_list[ pos:pos+n] )  )
@@ -368,10 +433,18 @@ class ExtractiveSummarizer_MemSum_wo_history:
 
 
     def extract( self, document_batch, p_stop_thres = None, ngram_blocking = False, ngram = 3, return_sentence_position = False, return_sentence_score_history = None, max_extracted_sentences_per_document = 4 ):
-        """document_batch is a batch of documents:
-        [  [ sen1, sen2, ... , senL1 ], 
-           [ sen1, sen2, ... , senL2], ...
-         ]
+        """
+        Extracts sentences from a batch of documents using the trained model components.
+        Args:
+            document_batch (list of list of str): A batch of documents, each document is a list of sentences.
+            p_stop_thres (float, optional): Threshold for stopping probability to decide when to stop extraction; defaults to 0.7.
+            ngram_blocking (bool, optional): Enables n-gram blocking to prevent redundancy; defaults to False.
+            ngram (int, optional): The size of n-grams for blocking; defaults to 3.
+            return_sentence_position (bool, optional): If True, returns the positions of extracted sentences; defaults to False.
+            return_sentence_score_history (bool, optional): If True, returns the history of sentence scores; defaults to False.
+            max_extracted_sentences_per_document (int, optional): Maximum number of sentences to extract per document; defaults to 4.
+        Returns:
+            list or tuple: Depending on the flags, returns extracted sentences and optionally their positions and score histories.
         """
         ## tokenization:
         document_length_list = []
@@ -501,6 +574,21 @@ class ExtractiveSummarizer_MemSum_wo_history:
 
 
 class ExtractiveSummarizer_MemSum_with_stop_sentence:
+    """
+    Initializes the extractive summarizer with specified model components and parameters.
+    Args:
+        model_path (str): Path to the pre-trained model checkpoint.
+        vocabulary_path (str): Path to the vocabulary file.
+        gpu (int, optional): GPU device index if CUDA is available.
+        embed_dim (int): Embedding dimension size.
+        num_heads (int): Number of attention heads.
+        hidden_dim (int): Dimension of the hidden layer.
+        N_enc_l (int): Number of layers in the local sentence encoder.
+        N_enc_g (int): Number of layers in the global context encoder.
+        N_dec (int): Number of layers in the extraction context decoder.
+        max_seq_len (int): Maximum length of sentences.
+        max_doc_len (int): Maximum number of sentences in a document.
+    """
     def __init__( self, model_path, vocabulary_path, gpu = None , embed_dim=200, num_heads=8, hidden_dim = 1024, N_enc_l = 2 , N_enc_g = 2, N_dec = 3,  max_seq_len =500, max_doc_len = 100  ):
         with open( vocabulary_path , "rb" ) as f:
             words = pickle.load(f)
@@ -528,15 +616,32 @@ class ExtractiveSummarizer_MemSum_with_stop_sentence:
 
     
     def get_ngram(self,  w_list, n = 4 ):
+        """
+        Generates a set of n-grams from a list of words.
+        Args:
+            w_list (list of str): The list of words from which to generate n-grams.
+            n (int, optional): The number of words in each n-gram; defaults to 4.
+        Returns:
+            set: A set containing the n-grams as strings, where each n-gram is represented by words joined with underscores.
+        """
         ngram_set = set()
         for pos in range(len(w_list) - n + 1 ):
             ngram_set.add( "_".join( w_list[ pos:pos+n] )  )
         return ngram_set
+    
     def extract( self, document_batch, p_stop_thres = 0.7, ngram_blocking = None, ngram = 3, return_sentence_position = False, return_sentence_score_history = False, max_extracted_sentences_per_document = 7 , stop_when_sampling_stop_sentence = True ):
-        """document_batch is a batch of documents:
-        [  [ sen1, sen2, ... , senL1 ], 
-           [ sen1, sen2, ... , senL2], ...
-         ]
+        """
+        Extracts sentences from a batch of documents using the trained model components.
+        Args:
+            document_batch (list of list of str): A batch of documents, each document is a list of sentences.
+            p_stop_thres (float, optional): Threshold for stopping probability to decide when to stop extraction; defaults to 0.7.
+            ngram_blocking (bool, optional): Enables n-gram blocking to prevent redundancy; defaults to False.
+            ngram (int, optional): The size of n-grams for blocking; defaults to 3.
+            return_sentence_position (bool, optional): If True, returns the positions of extracted sentences; defaults to False.
+            return_sentence_score_history (bool, optional): If True, returns the history of sentence scores; defaults to False.
+            max_extracted_sentences_per_document (int, optional): Maximum number of sentences to extract per document; defaults to 4.
+        Returns:
+            list or tuple: Depending on the flags, returns extracted sentences and optionally their positions and score histories.
         """
         ## tokenization:
         tokenized_document_batch = []

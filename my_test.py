@@ -1,48 +1,87 @@
-from my_summarizers import ExtractiveSummarizer_MemSum_Final, ExtractiveSummarizer_MemSum_wo_history, ExtractiveSummarizer_MemSum_with_stop_sentence
-from pyrouge import Rouge155
+# Authors: Alex Johannesson and Saumya Shukla
+# Description: This script performs document summarization using different models and measures their performance with ROUGE scores. It supports command-line arguments for flexible execution configurations.
+
+import argparse
 import json
 import numpy as np
 import os
-from tqdm import tqdm
 import time
-import argparse
+from tqdm import tqdm
+from nltk.tokenize import sent_tokenize
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from transformers import pipeline
+from sentence_transformers import SentenceTransformer
 
+# Import custom summarizer modules
+from my_summarizers import ExtractiveSummarizer_MemSum_Final, ExtractiveSummarizer_MemSum_wo_history, ExtractiveSummarizer_MemSum_with_stop_sentence
+
+# Setting up command line arguments
 parser = argparse.ArgumentParser()
-parser.add_argument("-model_type" )
-parser.add_argument("-summarizer_model_path" )
-parser.add_argument("-vocabulary_path" )
-parser.add_argument("-corpus_path" )
-parser.add_argument("-gpu", type =int )
-parser.add_argument("-max_extracted_sentences_per_document", type =int )
-parser.add_argument("-p_stop_thres", type =float )
-parser.add_argument("-output_file" )
-parser.add_argument("-max_count", type = int, default = None)
-
-parser.add_argument("-use_fast_rouge", type = int, default = 1)
-parser.add_argument("-system_dir", default = None )
-parser.add_argument("-model_dir", default = None )
-
-
-parser.add_argument("-N_enc_l", type =int, default = 2 )
-parser.add_argument("-N_enc_g", type =int, default = 2 )
-parser.add_argument("-N_dec", type =int, default = 3 )
-parser.add_argument("-embed_dim", type =int, default = 200 )
-parser.add_argument("-ngram_blocking", default = "False" )
-parser.add_argument("-ngram", type =int, default = 4 )
-parser.add_argument("-max_doc_len", type = int, default = 500)
-parser.add_argument("-max_seq_len", type = int, default = 100)
-
-
+parser.add_argument("-model_type", help="Type of model to use for summarization")
+parser.add_argument("-summarizer_model_path", help="Path to the summarizer model file")
+parser.add_argument("-vocabulary_path", help="Path to the vocabulary file")
+parser.add_argument("-corpus_path", help="Path to the corpus file")
+parser.add_argument("-gpu", type=int, help="GPU device index")
+parser.add_argument("-max_extracted_sentences_per_document", type=int, help="Maximum number of sentences to extract per document")
+parser.add_argument("-p_stop_thres", type=float, help="Threshold for stopping probability")
+parser.add_argument("-output_file", help="Output file path for the results")
+parser.add_argument("-max_count", type=int, default=None, help="Maximum number of documents to process")
+parser.add_argument("-use_fast_rouge", type=int, default=1, help="Use fast ROUGE implementation if set to 1")
+parser.add_argument("-system_dir", default=None, help="Directory for system generated summaries")
+parser.add_argument("-model_dir", default=None, help="Directory for model summaries")
+parser.add_argument("-N_enc_l", type=int, default=2, help="Number of layers in local encoder")
+parser.add_argument("-N_enc_g", type=int, default=2, help="Number of layers in global encoder")
+parser.add_argument("-N_dec", type=int, default=3, help="Number of layers in decoder")
+parser.add_argument("-embed_dim", type=int, default=200, help="Embedding dimension")
+parser.add_argument("-ngram_blocking", default="False", help="Enable ngram blocking")
+parser.add_argument("-ngram", type=int, default=4, help="Ngram size")
+parser.add_argument("-max_doc_len", type=int, default=500, help="Maximum document length")
+parser.add_argument("-max_seq_len", type=int, default=100, help="Maximum sequence length")
 args = parser.parse_args()
 
+# Parsing the boolean argument correctly
 ngram_blocking = args.ngram_blocking.lower() == "true"
 
-results_dir_path = os.path.dirname( args.output_file )
-if not os.path.exists( results_dir_path ):
+# Ensuring the results directory exists
+results_dir_path = os.path.dirname(args.output_file)
+if not os.path.exists(results_dir_path):
     try:
-        os.makedirs( results_dir_path )
-    except:
-        pass
+        os.makedirs(results_dir_path)
+    except Exception as e:
+        print(f"Failed to create directory {results_dir_path}: {e}")
+
+# Initialize the paraphrasing model and sentence transformer for refinement
+paraphraser = pipeline("text2text-generation", model="tuner007/pegasus_paraphrase")
+model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
+
+def paraphrase_sentences(sentences):
+    """
+    Paraphrases a list of sentences using a pretrained model.
+    """
+    return [paraphraser(sentence)[0]['generated_text'] for sentence in sentences]
+
+def refine_summary(raw_summary, importance_scores=None):
+    """
+    Refines a summary by tokenizing and re-ranking its sentences based on importance and uniqueness.
+    """
+    sentences = sent_tokenize(raw_summary)
+    if importance_scores is None:
+        tfidf_vectorizer = TfidfVectorizer(stop_words='english')
+        tfidf_matrix = tfidf_vectorizer.fit_transform(sentences)
+        importance_scores = tfidf_matrix.sum(axis=1).A.ravel()
+
+    sentence_embeddings = model.encode(sentences)
+    sim_matrix = cosine_similarity(sentence_embeddings)
+    importance_scores = np.array(importance_scores) / np.max(importance_scores)
+
+    selected_sentences = []
+    for i, sentence in enumerate(sentences):
+        unique_enough = all(sim_matrix[i, j] < 1 - 0.05 * importance_scores[i] for j in range(len(sentences)) if i != j)
+        if unique_enough and importance_scores[i] > 0.05:
+            selected_sentences.append(sentence)
+
+    return ' '.join(selected_sentences)
 
 
 if args.model_type == "MemSum_Final":
@@ -107,14 +146,15 @@ if args.use_fast_rouge:
                 lead_n = int( args.model_type.split("_")[-1] )
                 extracted_sen = data["text"][:lead_n]
             else:
-                extracted_sen = base_extractor.extract( [ data["text"] ], args.p_stop_thres , ngram_blocking, args.ngram , max_extracted_sentences_per_document = args.max_extracted_sentences_per_document )
-                extracted_sen = extracted_sen[0]
+                extracted_sen = base_extractor.extract([data["text"]], args.p_stop_thres, ngram_blocking, args.ngram, max_extracted_sentences_per_document=args.max_extracted_sentences_per_document)
+                extracted_sen = extracted_sen[0]  # The first document's extracted summary
+                refined_summary = refine_summary("\n".join(extracted_sen))
             tac = time.time()
             extraction_time_list.append(tac - tic)
             num_extracted_sentences_list.append( len( extracted_sen ) )
 
-            score = rouge_cal.score( "\n".join( data["summary"] ) , "\n".join( extracted_sen )  )
-            scores.append( ( score["rouge1"] ,score["rouge2"],score["rougeLsum"]     ) )
+            score = rouge_cal.score("\n".join(data["summary"]), refined_summary)
+            scores.append((score["rouge1"], score["rouge2"], score["rougeLsum"]))
 
 
             count +=1
@@ -177,8 +217,9 @@ else:
                     lead_n = int( args.model_type.split("_")[-1] )
                     extracted_sen = data["text"][:lead_n]
                 else:
-                    extracted_sen = base_extractor.extract( [ data["text"] ], args.p_stop_thres , ngram_blocking, args.ngram , max_extracted_sentences_per_document = args.max_extracted_sentences_per_document )
-                    extracted_sen = extracted_sen[0]
+                    extracted_sen = base_extractor.extract([data["text"]], args.p_stop_thres, ngram_blocking, args.ngram, max_extracted_sentences_per_document=args.max_extracted_sentences_per_document)
+                    extracted_sen = extracted_sen[0]  # The first document's extracted summary
+                    refined_summary = refine_summary("\n".join(extracted_sen))
                 tac = time.time()
                 extraction_time_list.append(tac - tic)
                 num_extracted_sentences_list.append( len( extracted_sen ) )

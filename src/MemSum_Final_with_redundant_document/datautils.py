@@ -16,47 +16,49 @@ class SentenceTokenizer:
         return sen.lower()
 
 class Vocab:
-    def __init__(self, words, eos_token = "<eos>", pad_token = "<pad>", unk_token = "<unk>" ):
+    def __init__(self, words, eos_token="<eos>", pad_token="<pad>", unk_token="<unk>"):
         self.words = words
         self.index_to_word = {}
         self.word_to_index = {}
-        for idx in range( len(words) ):
-            self.index_to_word[ idx ] = words[idx]
-            self.word_to_index[ words[idx] ] = idx
+        for idx, word in enumerate(words):
+            self.index_to_word[idx] = word
+            self.word_to_index[word] = idx
         self.eos_token = eos_token
         self.pad_token = pad_token
         self.unk_token = unk_token
         self.eos_index = self.word_to_index[self.eos_token]
         self.pad_index = self.word_to_index[self.pad_token]
+        self.vocab_size = len(words)  # Adding vocab_size as an attribute
 
-        self.tokenizer = SentenceTokenizer()   
+        self.tokenizer = SentenceTokenizer()
 
-    def index2word( self, idx ):
-        return self.index_to_word.get( idx, self.unk_token)
-    def word2index( self, word ):
-        return self.word_to_index.get( word, -1 )
-    # The sentence needs to be tokenized 
-    def sent2seq( self, sent, max_len = None , tokenize = True):
+    def index2word(self, idx):
+        return self.index_to_word.get(idx, self.unk_token)
+
+    def word2index(self, word):
+        return self.word_to_index.get(word, -1)
+
+    def sent2seq(self, sent, max_len=None, tokenize=True):
         if tokenize:
             sent = self.tokenizer.tokenize(sent)
         seq = []
         for w in sent.split():
-            if w in self.word_to_index:
-                seq.append( self.word2index(w) )
+            seq.append(self.word2index(w))
         if max_len is not None:
             if len(seq) >= max_len:
-                seq = seq[:max_len -1]
-                seq.append( self.eos_index )
+                seq = seq[:max_len - 1]
+                seq.append(self.eos_index)
             else:
-                seq.append( self.eos_index )
-                seq += [ self.pad_index ] * ( max_len - len(seq) )
+                seq.append(self.eos_index)
+                seq += [self.pad_index] * (max_len - len(seq))
         return seq
-    def seq2sent( self, seq ):
+
+    def seq2sent(self, seq):
         sent = []
         for i in seq:
             if i == self.eos_index or i == self.pad_index:
                 break
-            sent.append( self.index2word(i) )
+            sent.append(self.index2word(i))
         return " ".join(sent)
 
 class ExtractionTrainingDataset(Dataset):

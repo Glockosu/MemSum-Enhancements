@@ -128,7 +128,7 @@ val_dataset = ExtractionValidationDataset( validation_corpus, vocab, max_seq_len
 val_data_loader = DataLoader( val_dataset, batch_size=batch_size_per_device * n_device , shuffle=False, num_workers=4,  drop_last= False,  worker_init_fn = lambda x:[np.random.seed( int( time.time() ) + 1 + x ), torch.manual_seed( int( time.time() ) + 1 + x ) ],  pin_memory= True)
 
 
-local_sentence_encoder = LocalSentenceEncoder( vocab_size,vocab.pad_index, embed_dim,num_heads,hidden_dim,N_enc_l, pretrained_embedding )
+local_sentence_encoder = LocalSentenceEncoder( vocab_size, vocab.pad_index, embed_dim,num_heads,hidden_dim,N_enc_l, pretrained_embedding )
 global_context_encoder = GlobalContextEncoder( embed_dim, num_heads, hidden_dim, N_enc_g )
 extraction_context_decoder = ExtractionContextDecoder( embed_dim, num_heads, hidden_dim, N_dec )
 extractor = Extractor( embed_dim, num_heads )
